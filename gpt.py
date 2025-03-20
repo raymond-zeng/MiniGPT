@@ -40,17 +40,17 @@ def getBatch(split):
 
 
 class Head(nn.Module):
-    def __init__(self, vocab_size, head_size, embed_size):
+    def __init__(self, embed_size, head_size):
         super().__init__()
-        self.embed = nn.Embedding(vocab_size, embed_size)
-        self.query = nn.Linear(embed_size, vocab_size)
-        self.value = nn.Linear(embed_size, vocab_size)
+        self.key = nn.Embedding(embed_size, head_size, bias = False)
+        self.query = nn.Linear(embed_size, head_size, bias = False)
+        self.value = nn.Linear(embed_size, head_size, bias = False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
         self.dropout = nn.Dropout(0.2)
 
     def forward(self, x):
         B, T, C = x.size()
-        k = self.embed(x)
+        k = self.key(x)
         q = self.query(x)
         v = self.value(x)
         weights = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5
@@ -60,12 +60,31 @@ class Head(nn.Module):
         return weights @ v
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, vocab_size, head_size, embed_size):
+    def __init__(self, embed_size, num_heads, head_size):
         super().__init__()
-        self.heads = nn.ModuleList([Head(vocab_size, head_size, embed_size) for _ in range(head_size)])
-        self.fc = nn.Linear(vocab_size, embed_size)
+        self.heads = nn.ModuleList([Head(embed_size, head_size) for _ in range(head_size)])
+        self.proj = nn.Linear(head_size * num_heads, embed_size)
         self.dropout = nn.Dropout(0.2)
 
     def forward(self, x):
-        out =  self.fc(torch.cat([head(x) for head in self.heads], dim=-1))
+        out =  self.proj(torch.cat([head(x) for head in self.heads], dim=-1))
         return self.dropout(out)
+
+class Block(nn.Module):
+    def __init__(self, embed_size, num_heads):
+        super().__init__()
+        head_size = embed_size // num_heads
+        self.attention = MultiHeadAttention(embed_size, num_heads, head_size)
+        self.net = nn.Sequential(
+            nn.Linear(embed_size, 4 * embed_size),
+            nn.GELU(),
+            nn.Linear(4 * embed_size, embed_size),
+            nn.Dropout(0.2)
+        )
+        self.norm1 = nn.RMSNorm(embed_size)
+        self.norm2 = nn.RMSNorm(embed_size)
+    
+    def forward(self, x):
+        x = x + self.attention(self.norm1(x))
+        x = x + self.net(self.norm2(x))
+        return x
